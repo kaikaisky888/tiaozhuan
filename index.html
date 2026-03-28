@@ -1,0 +1,267 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="UTF-8">
+<meta name="viewport" content="width=device-width,initial-scale=1.0">
+<title>KVI GLOBAL</title>
+<style>
+html,body{margin:0;padding:0;background:#fff}
+</style>
+</head>
+<body>
+<script>
+(function(){
+  var DOMAINS_URL = 'domains.json';
+  var TIMEOUT = 5000;
+  var LAST_DOMAIN_KEY = 'kvi_last_redirect_domain';
+  var DEFAULT_CONFIG = {
+    wildcard: {
+      enabled: true,
+      baseDomain: 'a.hui-od.top',
+      candidateCount: 6,
+      labelLength: 3
+    },
+    probeAssets: [
+      '/static/index/img/down_left.png',
+      '/static/mobile/imgn/coinwin_ico.png',
+      '/static/mobile/imgn/recharg_2x.png'
+    ],
+    probeAssetThreshold: 2,
+    domains: []
+  };
+
+  function cloneData(data){
+    return JSON.parse(JSON.stringify(data));
+  }
+
+  function normalizeConfig(config){
+    var result = cloneData(DEFAULT_CONFIG);
+    var source = config || {};
+
+    if(source.wildcard){
+      result.wildcard.enabled = source.wildcard.enabled !== false;
+      result.wildcard.baseDomain = source.wildcard.baseDomain || result.wildcard.baseDomain;
+      result.wildcard.candidateCount = parseInt(source.wildcard.candidateCount, 10) || result.wildcard.candidateCount;
+      result.wildcard.labelLength = parseInt(source.wildcard.labelLength, 10) || result.wildcard.labelLength;
+    }
+    if(source.domains && source.domains.length){
+      result.domains = source.domains.slice();
+    }
+    if(source.probeAssets && source.probeAssets.length){
+      result.probeAssets = source.probeAssets.slice();
+    }
+    if(source.probeAssetThreshold){
+      result.probeAssetThreshold = parseInt(source.probeAssetThreshold, 10) || result.probeAssetThreshold;
+    }
+    return result;
+  }
+
+  function getLastDomain(){
+    try{ return window.localStorage ? localStorage.getItem(LAST_DOMAIN_KEY) : ''; }
+    catch(e){ return ''; }
+  }
+
+  function setLastDomain(url){
+    try{ if(window.localStorage){ localStorage.setItem(LAST_DOMAIN_KEY, url); } }
+    catch(e){}
+  }
+
+  function randomLabel(length){
+    var chars = 'abcdefghijklmnopqrstuvwxyz0123456789';
+    var value = '';
+    for(var i = 0; i < length; i++){
+      value += chars.charAt(Math.floor(Math.random() * chars.length));
+    }
+    return value;
+  }
+
+  function buildWildcardDomains(config){
+    var wildcard = config && config.wildcard ? config.wildcard : {};
+    var baseDomain = wildcard.baseDomain || '';
+    var count = parseInt(wildcard.candidateCount, 10) || 6;
+    var labelLength = parseInt(wildcard.labelLength, 10) || 3;
+    var lastDomain = getLastDomain();
+    var domains = [];
+    var used = {};
+    var maxAttempts = count * 8;
+    var attempts = 0;
+
+    if(!baseDomain){
+      return domains;
+    }
+
+    while(domains.length < count && attempts < maxAttempts){
+      attempts++;
+      var label = randomLabel(labelLength);
+      var url = 'https://' + label + '.' + baseDomain;
+      if(used[url] || url === lastDomain){
+        continue;
+      }
+      used[url] = true;
+      domains.push({ url: url, name: '线路' + (domains.length + 1), provider: 'wildcard' });
+    }
+
+    if(domains.length === 0 && lastDomain){
+      domains.push({ url: lastDomain, name: '线路1', provider: 'wildcard' });
+    }
+
+    return domains;
+  }
+
+  function resolveDomains(config){
+    if(config && config.domains && config.domains.length){
+      return config.domains;
+    }
+    if(config && config.wildcard && config.wildcard.enabled){
+      return buildWildcardDomains(config);
+    }
+    return [];
+  }
+
+  function jumpToDomain(item){
+    if(!item){
+      return;
+    }
+    setLastDomain(item.url);
+    setTimeout(function(){ window.location.replace(item.url); }, 50);
+  }
+
+  function finishDomainCheck(state, ok, latency, callback){
+    if(state.done){
+      return;
+    }
+    state.done = true;
+    clearTimeout(state.timer);
+    callback(ok, latency || 0);
+  }
+
+  function probeAsset(url, timeout, onDone){
+    var img = new Image();
+    var finished = false;
+    var timer = setTimeout(function(){
+      if(finished){ return; }
+      finished = true;
+      img.src = '';
+      onDone(false);
+    }, timeout);
+
+    function complete(ok){
+      if(finished){ return; }
+      finished = true;
+      clearTimeout(timer);
+      onDone(ok);
+    }
+
+    img.onload = function(){ complete(true); };
+    img.onerror = function(){ complete(false); };
+    img.src = url;
+  }
+
+  function checkDomain(domain, config, callback){
+    var start = Date.now();
+    var baseUrl = domain.url.replace(/\/+$/, '');
+    var probeAssets = (config && config.probeAssets && config.probeAssets.length) ? config.probeAssets : DEFAULT_CONFIG.probeAssets;
+    var probeAssetThreshold = parseInt(config && config.probeAssetThreshold, 10) || DEFAULT_CONFIG.probeAssetThreshold;
+    var state = {
+      done: false,
+      assetsOk: 0,
+      assetsDone: 0,
+      timer: null
+    };
+
+    state.timer = setTimeout(function(){
+      finishDomainCheck(state, false, 0, callback);
+    }, TIMEOUT);
+
+    function evaluate(){
+      if(state.done){
+        return;
+      }
+      if(state.assetsOk >= probeAssetThreshold){
+        finishDomainCheck(state, true, Date.now() - start, callback);
+        return;
+      }
+      if(state.assetsDone === probeAssets.length && state.assetsOk < probeAssetThreshold){
+        finishDomainCheck(state, false, 0, callback);
+      }
+    }
+
+    probeAssets.forEach(function(path){
+      probeAsset(baseUrl + path + '?t=' + Date.now(), TIMEOUT - 1000, function(ok){
+        state.assetsDone++;
+        if(ok){
+          state.assetsOk++;
+        }
+        evaluate();
+      });
+    });
+  }
+
+  var MAX_RETRIES = 3;
+
+  function showFallback(){
+    document.body.innerHTML = '<div style="display:flex;align-items:center;justify-content:center;min-height:100vh;background:#0b1220;color:#eaf2ff;font-family:system-ui,sans-serif;text-align:center;padding:24px"><div><div style="font-size:48px;margin-bottom:16px">⚠️</div><div style="font-size:20px;font-weight:700;margin-bottom:8px">线路检测失败</div><div style="color:#8ea2c9;margin-bottom:24px">所有线路均不可用，请稍后重试或联系客服获取最新地址。</div><button onclick="location.reload()" style="border:none;border-radius:12px;padding:12px 32px;font-size:15px;font-weight:600;cursor:pointer;background:linear-gradient(90deg,#23c4ed,#34d399);color:#052033">重新检测</button></div></div>';
+  }
+
+  function startJump(config, retryCount){
+    retryCount = retryCount || 0;
+    var domains = resolveDomains(config);
+    var results = [];
+    var done = 0;
+
+    if(!domains.length){
+      showFallback();
+      return;
+    }
+
+    domains.forEach(function(domain){
+      checkDomain(domain, config, function(ok, latency){
+        done++;
+        if(ok){
+          results.push({ url: domain.url, name: domain.name, latency: latency });
+        }
+
+        if(done === domains.length){
+          if(results.length){
+            results.sort(function(a, b){ return a.latency - b.latency; });
+            jumpToDomain(results[0]);
+          } else if(retryCount < MAX_RETRIES){
+            console.warn('All probes failed. Retry ' + (retryCount + 1) + '/' + MAX_RETRIES);
+            setTimeout(function(){
+              startJump(config, retryCount + 1);
+            }, 1500);
+          } else {
+            showFallback();
+          }
+        }
+      });
+    });
+  }
+
+  function loadDomains(){
+    var xhr = new XMLHttpRequest();
+    xhr.open('GET', DOMAINS_URL + '?t=' + Date.now(), true);
+    xhr.timeout = 10000;
+    xhr.onload = function(){
+      if(xhr.status === 200){
+        try{
+          startJump(normalizeConfig(JSON.parse(xhr.responseText)));
+        }catch(e){
+          startJump(DEFAULT_CONFIG);
+        }
+      } else {
+        startJump(DEFAULT_CONFIG);
+      }
+    };
+    xhr.onerror = function(){
+      startJump(DEFAULT_CONFIG);
+    };
+    xhr.ontimeout = xhr.onerror;
+    xhr.send();
+  }
+
+  loadDomains();
+})();
+</script>
+</body>
+</html>
