@@ -12,7 +12,8 @@ html,body{margin:0;padding:0;background:#fff}
 <script>
 (function(){
   var DOMAINS_URL = 'domains.json';
-  var TIMEOUT = 5000;
+  var TIMEOUT = 3000;
+  var RACE_GRACE = 500;
   var LAST_DOMAIN_KEY = 'kvi_last_redirect_domain';
   var DEFAULT_CONFIG = {
     wildcard: {
@@ -208,32 +209,50 @@ html,body{margin:0;padding:0;background:#fff}
     var domains = resolveDomains(config);
     var results = [];
     var done = 0;
+    var jumped = false;
+    var graceTimer = null;
 
     if(!domains.length){
       showFallback();
       return;
     }
 
+    function doJump(){
+      if(jumped){ return; }
+      jumped = true;
+      if(graceTimer){ clearTimeout(graceTimer); }
+      if(results.length){
+        results.sort(function(a, b){ return a.latency - b.latency; });
+        jumpToDomain(results[0]);
+      }
+    }
+
+    function onResult(ok, domain, latency){
+      if(jumped){ return; }
+      done++;
+      if(ok){
+        results.push({ url: domain.url, name: domain.name, latency: latency });
+        if(!graceTimer){
+          graceTimer = setTimeout(doJump, RACE_GRACE);
+        }
+      }
+      if(done === domains.length){
+        if(results.length){
+          doJump();
+        } else if(retryCount < MAX_RETRIES){
+          console.warn('All probes failed. Retry ' + (retryCount + 1) + '/' + MAX_RETRIES);
+          setTimeout(function(){
+            startJump(config, retryCount + 1);
+          }, 1000);
+        } else {
+          showFallback();
+        }
+      }
+    }
+
     domains.forEach(function(domain){
       checkDomain(domain, config, function(ok, latency){
-        done++;
-        if(ok){
-          results.push({ url: domain.url, name: domain.name, latency: latency });
-        }
-
-        if(done === domains.length){
-          if(results.length){
-            results.sort(function(a, b){ return a.latency - b.latency; });
-            jumpToDomain(results[0]);
-          } else if(retryCount < MAX_RETRIES){
-            console.warn('All probes failed. Retry ' + (retryCount + 1) + '/' + MAX_RETRIES);
-            setTimeout(function(){
-              startJump(config, retryCount + 1);
-            }, 1500);
-          } else {
-            showFallback();
-          }
-        }
+        onResult(ok, domain, latency);
       });
     });
   }
@@ -241,7 +260,7 @@ html,body{margin:0;padding:0;background:#fff}
   function loadDomains(){
     var xhr = new XMLHttpRequest();
     xhr.open('GET', DOMAINS_URL + '?t=' + Date.now(), true);
-    xhr.timeout = 10000;
+    xhr.timeout = 5000;
     xhr.onload = function(){
       if(xhr.status === 200){
         try{
